@@ -1,0 +1,150 @@
+# ==============================================================================
+# DRL_market 全局配置文件 (Final Unified Version)
+# 融合了 "Route A" 物理参数、"Dual-Layer" 架构配置 以及 "CMDP" 约束参数
+# ==============================================================================
+
+# --- 1. 环境配置 (Environment) ---
+env:
+  id: "BatteryStorage-v1"
+  topology: "active_dcdc"
+  n_clusters: 24
+  cells_per_cluster: 240
+  nominal_voltage_v: 768.0
+  cell_capacity_ah: 280.0
+  dcdc_efficiency: 0.97
+  aux_load_ratio: 0.001
+  high_level_step_minutes: 15
+  low_level_step_seconds: 1.0
+  external_power_profile_path: "data/profiles/guanghe_30days_scaled.npz"
+
+  limits:
+    temp_max: 45.0  # 容量收益熔断温度
+    soc_min: 0.05
+    soc_max: 0.95
+    power_max: 1.2
+
+# --- 2. 市场与经济配置 (Market) ---
+market:
+  price_unit: "kwh"
+  market_type: "energy_and_regulation"
+  rated_capacity_kwh: 5160.0
+  rated_power_kw: 2580.0   # ✅ 修正：2.58MW = 2580kW
+  battery_capex_cny: 3612000.0
+  cycle_life: 6000
+  k_I_max: null   # ✅ 默认不截断 k_I
+  m_I_max: null   # ✅ 默认不截断 m_I
+
+  # [新增] 统一出清价合规护栏
+  price_cap: 15.0
+  price_floor: -1000.0
+
+  # [新增] 调频容量补偿（南方细则未定义，默认关闭）
+  reg_capacity_payment_enabled: false
+
+  # [新增] 边际替代率参数与方法（线性）
+  marginal_U_y: 2.5
+  marginal_U_x: 0.6
+  marginal_sub_method: "linear"
+  # 若未来需要曲线插值，可启用 method=curve
+  marginal_sub_curve:
+    - [0.00, 2.50]
+    - [0.12, 1.90]
+    - [0.24, 1.60]
+    - [0.36, 1.30]
+    - [0.48, 1.15]
+    - [0.60, 1.00]
+    - [1.00, 1.00]
+
+  # [新增] 性能基准（市场固定值，单位：MW/min）
+  best_coal_speed_mw_per_min: 30.0
+  avg_standard_speed_mw_per_min: 20.0
+
+  # [新增] 容量电价机制（启用）
+  capacity_mechanism:
+    enabled: true
+    note: "仿真简化：将年容量电价均摊到每个步长，用 availability 代理顶峰考核"
+    coal_capacity_price_cny_per_kw_year: 100.0
+    storage_duration_hours: 2.0
+    max_net_load_peak_hours: 4.0
+    storage_capacity_price_cny_per_kw_year: 100.0
+
+  # [LEGACY] 旧容量收益字段（HighLevelEnv 仍在使用，后续统一移除）
+  capacity_price_kw_year: 50.0  # 约 3500元/天，如果不触发熔断就能拿到
+  capacity_penalty_ratio: 2.0
+
+  # [调频收益] 绩效
+  regulation_mileage_ratio: 1.5
+  regulation_perf_k: 2.5
+
+  # [考核门槛]
+  k_threshold: 2.5       # 拿调频费的高门槛
+  k_threshold_cap: 1.8   # 拿容量费的底线门槛 (Alive Check)
+
+  # [关键] 偏差惩罚 (刚性计划约束)
+  # 设为 2.0 (高于平均电价)，迫使智能体首选履约
+  penalty_price_deviation: 2.0
+  default_tolerance: 0.02
+
+# --- 3. 双层架构 (Hierarchy) ---
+hierarchy:
+  enabled: true
+  low_level_structured_policy: true
+  lambda_min: 0.0
+  lambda_max: 5.0
+
+# --- 4. 智能体配置 (Agent) ---
+agent:
+  algo: "sac"
+  policy: "MlpPolicy"
+  hidden_sizes: [256, 256, 256]
+  gamma: 0.999
+  tau: 0.005
+  learning_rate: 0.0003
+  batch_size: 256
+  buffer_size: 1000000
+  learning_starts: 10000 # 快速启动
+
+  ent_coef: "auto_0.05"
+  train_freq: 1
+  gradient_steps: 1
+
+# --- 5. 训练流程 (Training) ---
+training:
+  seed: 42
+  deterministic: false
+  n_envs: 16
+  total_timesteps: 2000000
+  low_level_steps: 2000000
+  log_interval: 10
+  save_interval: 50000
+  eval_interval: 20000
+
+# --- 6. 约束管理 (Constraints) ---
+constraints:
+  enabled: true
+  method: "lagrangian"
+  cost_limit: 0.05
+  lagrangian_lr: 0.05
+  lambda_init: 0.0
+  penalty_soft_cap: 100.0
+  limits:
+    temp_max: 43.0  # 软约束比硬约束(45)紧一点，留缓冲
+    soc_min: 0.08
+    soc_max: 0.92
+    power_max: 1.1
+
+# --- 7. 老化模型参数 (Aging: PASAM) ---
+# 物理感知应力模型参数
+aging:
+  # 基础衰减率 (每Ah)
+  alpha_base: 2.0e-5
+  # 热应力 (Arrhenius): 每10度翻倍 -> ln(2)/10 ≈ 0.069
+  beta_T: 0.069
+  # 机械应力 (SOC): 边缘膨胀系数
+  gamma_soc: 1.5
+  k_soc: 2.0
+  # 动力学应力 (Rate): 大倍率系数
+  lambda_rate: 0.1
+  # 参考标准
+  T_ref: 25.0
+  C_cap: 280.0
